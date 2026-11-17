@@ -291,6 +291,7 @@
     // referência: só investir a diferença
     const invOnly = state.invMode === 'investir' ? null : F.compareInvestment({ sac, price, ...invParams, mode: 'investir', finalOnly: true });
     const all = F.compareAllPolicies({ sac, price, ...invParams, periodo: state.invPeriodo });
+    const iva = F.investVsAmortize({ sac, price, months, ipca: invParams.ipca, applyIR: state.ir, periodo: state.invPeriodo });
     const target = Number(state.payoffTarget) >= 1 ? Math.min(Number(state.payoffTarget), months) : Math.round(months / 2);
     const payoffBase = { principal: state.principal, monthlyRate, months, extras, target, periodo: state.payoffPeriodo, ...invParams };
     const pS = F.payoffPlan({ ...payoffBase, system: 'SAC' });
@@ -299,7 +300,7 @@
     const strat = F.compareStrategies({
       principal: state.principal, monthlyRate, months, budget: Number(state.budget) || 0, periodo: state.periodo, ...invParams,
     });
-    return { months, monthlyRate, extras, sac, price, baseSac, basePrice, inv, invOnly, breakEven, strat, all, payoff };
+    return { months, monthlyRate, extras, sac, price, baseSac, basePrice, inv, invOnly, breakEven, strat, all, iva, payoff };
   }
 
   function update() {
@@ -314,6 +315,7 @@
     renderSummary(r);
     renderCompChart(r);
     renderAllOptions(r);
+    renderBreakEven(r);
     renderInvestment(r);
     renderStrategies(r);
     renderPayoff(r);
@@ -379,6 +381,44 @@
       ctx.moveTo(x, top);
       ctx.lineTo(x, bottom);
       ctx.stroke();
+      ctx.restore();
+    },
+  };
+
+  // linha vertical de referência: options.plugins.vline = { x: valor (escala de categorias numéricas), label }
+  const vline = {
+    id: 'vline',
+    afterDatasetsDraw(chart, _args, opts) {
+      if (!opts || opts.x === undefined || opts.x === null) return;
+      const labels = chart.data.labels;
+      const scale = chart.scales.x;
+      let k = labels.findIndex((v) => v >= opts.x);
+      if (k < 0) return;
+      let px = scale.getPixelForValue(k);
+      if (k > 0 && labels[k] !== opts.x) {
+        const t = (opts.x - labels[k - 1]) / (labels[k] - labels[k - 1]);
+        const p0 = scale.getPixelForValue(k - 1);
+        px = p0 + (px - p0) * t;
+      }
+      const { top, bottom } = chart.chartArea;
+      const ctx = chart.ctx;
+      ctx.save();
+      ctx.strokeStyle = css('--text-2');
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(px, top);
+      ctx.lineTo(px, bottom);
+      ctx.stroke();
+      if (opts.label) {
+        ctx.setLineDash([]);
+        ctx.fillStyle = css('--text-2');
+        ctx.font = '12px ' + css('--font');
+        const w = ctx.measureText(opts.label).width;
+        const right = px + 6 + w > chart.chartArea.right;
+        ctx.textAlign = right ? 'right' : 'left';
+        ctx.fillText(opts.label, right ? px - 6 : px + 6, top + 12);
+      }
       ctx.restore();
     },
   };
@@ -469,7 +509,7 @@
       charts[key] = null;
     }
     if (!charts[key]) {
-      charts[key] = new Chart($(canvasId), { type, data: { labels, datasets }, options: opts, plugins: [crosshair] });
+      charts[key] = new Chart($(canvasId), { type, data: { labels, datasets }, options: opts, plugins: [crosshair, vline] });
     } else {
       const c = charts[key];
       c.data.labels = labels;
@@ -999,6 +1039,112 @@
     const f = state.stratFilter;
     const rows = st.series.filter((m) => (f === 'extra' ? m.amortExtra > 0 : f === 'ativo' ? !st.quitacao || m.mes <= st.quitacao : true));
     $('strat-month-body').innerHTML = monthRowsHtml(rows, st.quitacao);
+  }
+
+  // ------------------------------------------------------------------ taxa para investir valer mais
+  const nominalDe = (real) => (1 + state.ipca / 100) * (1 + real) - 1;
+
+  function renderBreakEven({ iva }) {
+    const be = iva.breakEven;
+    const atual = state.real / 100;
+    const realFin = (1 + state.taxa / 100) / (1 + state.ipca / 100) - 1;
+    const hojeTxt = state.hoje ? ' (em R$ de hoje)' : '';
+
+    const beTile = (sys) => {
+      const x = be[sys];
+      if (x === null) return { key: sys.toLowerCase(), label: 'Comprador ' + sys + ': investir > amortizar', value: 'acima de IPCA + 40%', sub: 'amortizar vence em qualquer taxa razoável' };
+      if (x <= iva.sweep[0].real && atual >= x) return { key: sys.toLowerCase(), label: 'Comprador ' + sys + ': investir > amortizar', value: 'qualquer taxa ≥ IPCA + ' + pct(x, 1), sub: 'investir já vale mais' };
+      const falta = x - atual;
+      return {
+        key: sys.toLowerCase(),
+        label: 'Comprador ' + sys + ': investir > amortizar a partir de',
+        value: 'IPCA + ' + pct(x),
+        sub: '= ' + pct(nominalDe(x)) + ' a.a. nominal bruto · ' +
+          (falta > 0 ? 'faltam ' + (falta * 100).toLocaleString('pt-BR', { maximumFractionDigits: 2 }) + ' p.p.' : 'sua taxa já supera'),
+      };
+    };
+    const vence = ['PRICE', 'SAC'].filter((sys) => be[sys] !== null && atual >= be[sys]);
+    const tiles = [
+      beTile('PRICE'),
+      beTile('SAC'),
+      {
+        label: 'Taxa do financiamento',
+        value: pct(state.taxa / 100) + ' a.a.',
+        sub: '= IPCA + ' + pct(realFin) + (state.ir ? ' · sem IR, o empate seria aqui' : ' · sem IR, o empate é aqui'),
+      },
+      {
+        label: 'Sua taxa: IPCA + ' + pct(atual),
+        value: vence.length ? 'Investir vale mais' : 'Amortizar vale mais',
+        sub: vence.length ? 'para o comprador ' + vence.join(' e ') : 'para os dois compradores',
+      },
+    ];
+    const box = $('be-tiles');
+    box.textContent = '';
+    tiles.forEach((t) => {
+      const el = document.createElement('div');
+      el.className = 'tile';
+      const l = document.createElement('div');
+      l.className = 'label';
+      if (t.key) {
+        const k = document.createElement('span');
+        k.className = 'key key-' + t.key;
+        l.appendChild(k);
+      }
+      l.appendChild(document.createTextNode(t.label));
+      const val = document.createElement('div');
+      val.className = 'value';
+      val.textContent = t.value;
+      const sub = document.createElement('div');
+      sub.className = 'sub';
+      sub.textContent = t.sub;
+      el.append(l, val, sub);
+      box.appendChild(el);
+    });
+
+    // gráfico: patrimônio no fim conforme a taxa real do investimento
+    $('be-title').textContent = 'Vantagem sobre amortizar todo mês × rendimento do investimento' + hojeTxt;
+    $('be-desc').textContent =
+      'Patrimônio no fim de cada opção menos o de amortizar todo mês, com a simulação inteira refeita para cada taxa IPCA + x%. Abaixo de zero, amortizar vale mais; onde a linha cruza o zero, investir passa a valer mais. A linha vertical marca a sua taxa.';
+    const pts = iva.sweep;
+    const d = (pt, v) => (state.hoje ? v / pt.deflator : v);
+    const cSac = css('--sac');
+    const cPrice = css('--price');
+    const series = [
+      { nome: 'SAC + investir a diferença', cor: cSac, dash: [], v: (pt) => pt.sacInv },
+      { nome: 'PRICE + investir a diferença', cor: cPrice, dash: [], v: (pt) => pt.priceInv },
+    ];
+    if (pts[0].sacPer !== null) {
+      series.push({ nome: 'SAC + investir e amortizar ' + cada(state.invPeriodo), cor: cSac, dash: [2, 3], v: (pt) => pt.sacPer });
+      series.push({ nome: 'PRICE + investir e amortizar ' + cada(state.invPeriodo), cor: cPrice, dash: [2, 3], v: (pt) => pt.pricePer });
+    }
+    series.push({ nome: 'Amortizar todo mês (SAC = PRICE): referência', cor: css('--text-2'), dash: [7, 4], v: (pt) => pt.amortPrice });
+
+    const legend = $('be-legend');
+    legend.textContent = '';
+    series.forEach((sr) => {
+      const it = document.createElement('span');
+      it.append(lineKey(sr.cor, sr.dash), document.createTextNode(sr.nome));
+      legend.appendChild(it);
+    });
+    const labels = pts.map((pt) => pt.real);
+    const ds = series.map((sr) => {
+      const line = lineDataset(sr.nome, pts.map((pt) => d(pt, sr.v(pt) - pt.amortPrice)), sr.cor);
+      line.borderDash = sr.dash;
+      return line;
+    });
+    const opts = baseOptions();
+    opts.plugins.legend.display = false;
+    opts.plugins.vline = { x: atual, label: 'sua taxa: IPCA + ' + pct(atual, 1) };
+    opts.plugins.tooltip.callbacks.title = (items) => 'Investimento a IPCA + ' + pct(Number(items[0].label)) + ' (' + pct(nominalDe(Number(items[0].label))) + ' a.a.)';
+    opts.plugins.tooltip.callbacks.label = (item) =>
+      item.dataset.label.startsWith('Amortizar')
+        ? '  referência (zero)'
+        : ' ' + signed(item.raw, brl0) + '  ' + item.dataset.label + (item.raw >= 0 ? ' (investir vale mais)' : ' (amortizar vale mais)');
+    opts.scales.x.ticks.callback = function (value) {
+      const x = Number(this.getLabelForValue(value));
+      return Math.round(x * 1000) % 20 === 0 ? 'IPCA + ' + Math.round(x * 100) + '%' : null;
+    };
+    drawChart('be', 'chart-be', 'line', labels, ds, opts);
   }
 
   // ------------------------------------------------------------------ quitar antes do prazo

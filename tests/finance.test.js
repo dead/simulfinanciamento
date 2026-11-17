@@ -282,3 +282,25 @@ test('período 1 equivale a amortizar todo mês e não duplica opções', () => 
   const plan = F.payoffPlan({ ...p, system: 'PRICE', target: 180, ipca: 0.045, real: 0.065, applyIR: true, periodo: 1 });
   assert.deepEqual(plan.options.map((o) => o.opcao), ['abater', 'fim']);
 });
+
+test('taxa para investir valer mais que amortizar', () => {
+  const p = { principal: 400000, monthlyRate: F.annualToMonthly(0.115), months: 360 };
+  const sac = F.simulate({ ...p, system: 'SAC' });
+  const price = F.simulate({ ...p, system: 'PRICE' });
+  const q = { sac, price, months: 360, ipca: 0.045, periodo: 12 };
+  const realDoFinanciamento = 1.115 / 1.045 - 1;
+  // sem IR, o empate é a própria taxa do financiamento
+  const semIR = F.investVsAmortize({ ...q, applyIR: false });
+  close(semIR.breakEven.SAC, realDoFinanciamento, 1e-4);
+  close(semIR.breakEven.PRICE, realDoFinanciamento, 1e-4);
+  // com IR é preciso render mais
+  const comIR = F.investVsAmortize({ ...q, applyIR: true });
+  assert.ok(comIR.breakEven.SAC > realDoFinanciamento + 0.002);
+  assert.ok(comIR.breakEven.PRICE > realDoFinanciamento + 0.002);
+  // na varredura, abaixo do empate amortizar ganha e acima investir ganha
+  const abaixo = comIR.sweep.find((s) => s.real === 0.06);
+  const acima = comIR.sweep.find((s) => s.real === 0.09);
+  assert.ok(abaixo.priceInv < abaixo.amortPrice && acima.priceInv > acima.amortPrice);
+  assert.ok(abaixo.sacInv < abaixo.amortSac && acima.sacInv > acima.amortSac);
+  close(comIR.sweep[0].amortSac, comIR.sweep[0].amortPrice, 1);
+});

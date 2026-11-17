@@ -442,6 +442,71 @@
   }
 
   /**
+   * Que taxa real (IPCA + x) o investimento precisa render para que investir a diferença das
+   * parcelas valha mais do que amortizar todo mês (patrimônio no fim do horizonte), por sistema.
+   * Também devolve uma varredura do patrimônio final por taxa, para o gráfico.
+   */
+  function investVsAmortize({ sac, price, months, ipca, applyIR, periodo = 12, sweep = [0, 0.12, 0.005] }) {
+    const fim = (real, mode, per) => {
+      const c = compareInvestment({ sac, price, months, ipca, real, applyIR, mode, periodo: per, finalOnly: true });
+      const l = c.series[c.series.length - 1];
+      return { SAC: l.patrimonioSac, PRICE: l.patrimonioPrice, deflator: l.deflator };
+    };
+    // varredura do patrimônio final por taxa real
+    const [ini, max, passo] = sweep;
+    const pontos = [];
+    const ponto = (real) => {
+      const inv = fim(real, 'investir', 1);
+      const am = fim(real, 'amortizar', 1);
+      const per = periodo > 1 ? fim(real, 'amortizar', periodo) : null;
+      return {
+        real,
+        deflator: inv.deflator,
+        sacInv: inv.SAC,
+        priceInv: inv.PRICE,
+        sacPer: per && per.SAC,
+        pricePer: per && per.PRICE,
+        amortSac: am.SAC,
+        amortPrice: am.PRICE,
+      };
+    };
+    const vantagem = (pt, sys) => (sys === 'SAC' ? pt.sacInv - pt.amortSac : pt.priceInv - pt.amortPrice);
+    const empateNaVarredura = (sys) => pontos.findIndex((pt, k) => k > 0 && vantagem(pontos[k - 1], sys) < 0 && vantagem(pt, sys) >= 0);
+    let fimVarredura = max;
+    for (let k = 0; ; k++) {
+      const real = Math.round((ini + k * passo) * 10000) / 10000;
+      if (real > fimVarredura + 1e-9) break;
+      pontos.push(ponto(real));
+      // estende a varredura até passar dos dois empates com 2 p.p. de folga (no máximo IPCA + 40%)
+      if (real >= fimVarredura - 1e-9 && fimVarredura < 0.4) {
+        const ks = ['SAC', 'PRICE'].map(empateNaVarredura);
+        if (ks.some((k) => k < 0)) fimVarredura += passo;
+        else fimVarredura = Math.max(fimVarredura, Math.max(...ks.map((k) => pontos[k].real)) + 0.02);
+      }
+    }
+
+    // empate: refina por bisseção dentro do intervalo da varredura em que o sinal troca
+    const breakEven = {};
+    ['SAC', 'PRICE'].forEach((sys) => {
+      const k = empateNaVarredura(sys);
+      if (k < 0) {
+        breakEven[sys] = vantagem(pontos[0], sys) >= 0 ? pontos[0].real : null; // já vale desde o início, ou nunca
+        return;
+      }
+      const f = (x) => fim(x, 'investir', 1)[sys] - fim(x, 'amortizar', 1)[sys];
+      let lo = pontos[k - 1].real;
+      let hi = pontos[k].real;
+      for (let it = 0; it < 12; it++) {
+        const mid = (lo + hi) / 2;
+        if (f(mid) >= 0) hi = mid;
+        else lo = mid;
+      }
+      breakEven[sys] = (lo + hi) / 2;
+    });
+    return { breakEven, sweep: pontos };
+  }
+
+  /**
    * Quanto é preciso pôr a mais por mês (valor fixo além da parcela original do contrato) para quitar
    * o financiamento até o mês `target`. O desembolso mensal é o mesmo em todas as opções
    * (parcela original + extra); o que exceder a parcela devida vai para:
@@ -584,6 +649,7 @@
     valueAt,
     compareInvestment,
     compareAllPolicies,
+    investVsAmortize,
     payoffPlan,
     milestones,
     budgetStrategy,
