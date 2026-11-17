@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Simulador SAC × PRICE</title>
+  <meta name="description" content="Simule financiamentos SAC e PRICE, abatimentos e o investimento da diferença das parcelas em IPCA + x% a.a.">
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="page-header">
+    <h1>Simulador de financiamento <span class="muted">SAC × PRICE</span></h1>
+    <p class="lede">Compare os dois sistemas, simule abatimentos e veja o que acontece se a diferença entre as parcelas for investida em IPCA + x% ao ano.</p>
+  </header>
+
+  <main>
+    <!-- ================= Entradas ================= -->
+    <section class="card" aria-labelledby="t-dados">
+      <h2 id="t-dados">Financiamento</h2>
+      <div class="fields">
+        <label class="field">
+          <span>Valor financiado (R$)</span>
+          <input id="principal" type="number" min="0" step="1000" inputmode="decimal">
+        </label>
+        <label class="field">
+          <span>Taxa de juros (% a.a.)</span>
+          <input id="taxa" type="number" min="0" step="0.01" inputmode="decimal">
+          <small id="taxa-mensal" class="hint"></small>
+        </label>
+        <label class="field">
+          <span>Prazo (meses)</span>
+          <input id="prazo" type="number" min="1" max="600" step="1" inputmode="numeric">
+          <small id="prazo-anos" class="hint"></small>
+        </label>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="t-abat">
+      <div class="card-head">
+        <h2 id="t-abat">Abatimentos <span class="muted">(amortizações extraordinárias)</span></h2>
+        <button id="add-extra" type="button" class="btn">+ Adicionar abatimento</button>
+      </div>
+      <p class="hint">Aplicados igualmente ao SAC e ao PRICE, logo após o pagamento da parcela do mês. Use “repetir a cada” para aportes periódicos (ex.: FGTS a cada 24 meses, 13º a cada 12).</p>
+      <div class="table-wrap">
+        <table class="extras" id="extras-table">
+          <thead>
+            <tr>
+              <th>Mês</th>
+              <th>Valor (R$)</th>
+              <th>Repetir a cada (meses)</th>
+              <th>Até o mês</th>
+              <th>Efeito</th>
+              <th><span class="sr-only">Remover</span></th>
+            </tr>
+          </thead>
+          <tbody id="extras-body"></tbody>
+        </table>
+      </div>
+      <p id="extras-empty" class="empty">Nenhum abatimento. Clique em “Adicionar abatimento” para simular.</p>
+    </section>
+
+    <!-- ================= Resumo ================= -->
+    <section class="card" aria-labelledby="t-resumo">
+      <h2 id="t-resumo">Resumo</h2>
+      <div class="table-wrap">
+        <table class="summary" id="summary-table">
+          <thead>
+            <tr>
+              <th></th>
+              <th><span class="key key-sac"></span>SAC</th>
+              <th><span class="key key-price"></span>PRICE</th>
+              <th>PRICE − SAC</th>
+            </tr>
+          </thead>
+          <tbody id="summary-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ================= Gráfico comparativo ================= -->
+    <section class="card" aria-labelledby="t-comp">
+      <div class="card-head">
+        <h2 id="t-comp">SAC × PRICE</h2>
+        <div class="seg" role="tablist" id="metric-seg">
+          <button type="button" data-v="parcela">Parcela</button>
+          <button type="button" data-v="saldo">Saldo devedor</button>
+          <button type="button" data-v="juros">Juros acumulados</button>
+          <button type="button" data-v="pago">Total desembolsado</button>
+        </div>
+      </div>
+      <label class="check" id="show-base-wrap">
+        <input type="checkbox" id="show-base"> Mostrar cenário sem abatimentos (tracejado)
+      </label>
+      <div class="chart-box"><canvas id="chart-comp" aria-label="Gráfico comparando SAC e PRICE"></canvas></div>
+    </section>
+
+    <!-- ================= Investimento ================= -->
+    <section class="card" aria-labelledby="t-inv">
+      <h2 id="t-inv">Diferença das parcelas: investir ou amortizar</h2>
+      <p class="hint">Os dois compradores desembolsam o mesmo valor todo mês: no início a parcela PRICE é menor, e o comprador PRICE fica com a diferença; quando a parcela SAC fica menor, é o comprador SAC quem fica com ela. A diferença pode ser investida, usada para amortizar o próprio financiamento todo mês, ou investida e resgatada a cada N meses para amortizar. No fim, compara-se o patrimônio (carteira − saldo devedor).</p>
+      <div class="fields">
+        <label class="field">
+          <span>O que fazer com a diferença</span>
+          <select id="inv-mode">
+            <option value="investir">Investir</option>
+            <option value="amortizar">Amortizar todo mês</option>
+            <option value="periodico">Investir e amortizar a cada N meses</option>
+          </select>
+        </label>
+        <label class="field" id="inv-periodo-wrap">
+          <span>Amortizar a cada (meses)</span>
+          <input id="inv-periodo" type="number" min="1" max="120" step="1" inputmode="numeric" aria-describedby="inv-periodo-hint">
+          <small class="hint" id="inv-periodo-hint">usado na opção “investir e amortizar a cada N meses”</small>
+        </label>
+      </div>
+      <div class="fields" style="margin-top:16px">
+        <label class="field">
+          <span>IPCA esperado (% a.a.)</span>
+          <input id="ipca" type="number" step="0.1" inputmode="decimal">
+        </label>
+        <label class="field">
+          <span>Taxa real x (IPCA + x% a.a.)</span>
+          <input id="real" type="number" step="0.1" inputmode="decimal">
+          <small id="taxa-inv" class="hint"></small>
+        </label>
+        <div class="field checks">
+          <label class="check"><input type="checkbox" id="ir"> Descontar IR regressivo no resgate</label>
+          <label class="check"><input type="checkbox" id="hoje"> Mostrar em R$ de hoje (descontado o IPCA)</label>
+        </div>
+      </div>
+
+      <h3 class="block-title">Todas as opções lado a lado</h3>
+      <p class="hint">Mesmo desembolso mensal em todas. Clique numa linha para ver os detalhes dela logo abaixo.</p>
+      <div class="verdict" id="all-verdict" role="status"></div>
+      <div class="table-wrap">
+        <table class="summary strat all-options">
+          <thead>
+            <tr><th>Opção</th><th>Quita em</th><th>Juros pagos</th><th>IR dos resgates</th><th>Patrimônio no fim</th><th>vs. melhor</th></tr>
+          </thead>
+          <tbody id="all-body"></tbody>
+        </table>
+      </div>
+      <div class="card-head chart-head">
+        <h3 id="all-title"></h3>
+        <div class="seg" role="tablist" id="all-seg">
+          <button type="button" data-v="diff">Diferença vs. melhor</button>
+          <button type="button" data-v="patrimonio">Patrimônio líquido</button>
+          <button type="button" data-v="saldo">Saldo devedor</button>
+        </div>
+      </div>
+      <p class="hint" id="all-desc"></p>
+      <div class="html-legend" id="all-legend"></div>
+      <div class="chart-box"><canvas id="chart-all" aria-label="Gráfico comparando todas as opções"></canvas></div>
+
+      <h3 class="block-title" id="sel-title"></h3>
+      <div class="verdict" id="verdict" role="status"></div>
+      <div class="tiles" id="inv-tiles"></div>
+
+      <h3>Quando o investimento passa a pagar o financiamento</h3>
+      <p class="hint" id="marcos-hint">Rendimento mensal da carteira de cada estratégia (já líquido de IR, se marcado) comparado com o próprio financiamento, enquanto o contrato está ativo.</p>
+      <p class="empty marcos-wrap" id="marcos-none" hidden>Amortizando a diferença todo mês, não há carteira enquanto o financiamento existe — tudo vai para o saldo devedor. Os marcos fazem sentido nos modos “Investir” e “Investir e amortizar a cada N meses”.</p>
+      <div class="table-wrap marcos-wrap" id="marcos-table">
+        <table class="summary">
+          <thead>
+            <tr>
+              <th></th>
+              <th><span class="key key-sac"></span>Comprador SAC</th>
+              <th><span class="key key-price"></span>Comprador PRICE</th>
+            </tr>
+          </thead>
+          <tbody id="marcos-body"></tbody>
+        </table>
+      </div>
+
+      <div class="card-head">
+        <h3 id="inv-title">Vantagem</h3>
+        <div class="seg" role="tablist" id="inv-seg">
+          <button type="button" data-v="vantagem">Vantagem PRICE − SAC</button>
+          <button type="button" data-v="patrimonio">Patrimônio líquido</button>
+          <button type="button" data-v="rendimento">Rendimento × juros</button>
+          <button type="button" data-v="carteira">Carteiras</button>
+          <button type="button" data-v="diferenca">Diferença por mês</button>
+        </div>
+      </div>
+      <p class="hint" id="inv-desc"></p>
+      <div class="chart-box"><canvas id="chart-inv" aria-label="Gráfico do investimento da diferença"></canvas></div>
+
+      <div class="card-head chart-head">
+        <h3>Mês a mês: o que fazer com a diferença</h3>
+        <div class="row-gap">
+          <div class="seg" role="tablist" id="inv-table-seg">
+            <button type="button" data-v="SAC">Comprador SAC</button>
+            <button type="button" data-v="PRICE">Comprador PRICE</button>
+          </div>
+          <select id="inv-filter" aria-label="Filtrar meses">
+            <option value="todos">Todos os meses</option>
+            <option value="acao">Só meses com aporte ou amortização</option>
+            <option value="extra">Só meses com amortização extra</option>
+          </select>
+          <button type="button" class="btn" id="inv-csv">Exportar CSV</button>
+        </div>
+      </div>
+      <p class="hint" id="inv-table-sum"></p>
+      <div class="table-wrap tall">
+        <table class="amort strat-month">
+          <thead>
+            <tr>
+              <th>Mês</th><th>O que fazer</th><th>Parcela</th><th>Investir</th>
+              <th>Resgatar</th><th>Amortização extra</th><th>Saldo devedor</th><th>Carteira</th>
+            </tr>
+          </thead>
+          <tbody id="inv-month-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ================= Investir ou amortizar ================= -->
+    <section class="card" aria-labelledby="t-strat">
+      <h2 id="t-strat">Investir ou amortizar?</h2>
+      <p class="hint">Orçamento mensal fixo durante todo o prazo: paga-se a parcela obrigatória e a sobra vai para o investimento ou para amortizar o saldo (reduzindo o prazo). Depois de quitar, todo o orçamento passa a ser investido. Usa o IPCA, a taxa real, o IR e a opção “R$ de hoje” da seção acima; não considera os abatimentos cadastrados.</p>
+      <div class="fields">
+        <label class="field">
+          <span>Orçamento mensal (R$)</span>
+          <input id="budget" type="number" min="0" step="100" inputmode="decimal">
+          <small id="budget-hint" class="hint"></small>
+        </label>
+        <label class="field">
+          <span>Amortizar a cada (meses)</span>
+          <input id="periodo" type="number" min="1" max="120" step="1" inputmode="numeric" aria-describedby="periodo-hint">
+          <small class="hint" id="periodo-hint">para a estratégia “investir e amortizar”</small>
+        </label>
+      </div>
+
+      <div class="verdict" id="strat-verdict" role="status"></div>
+      <div class="table-wrap">
+        <table class="summary strat">
+          <thead>
+            <tr><th>Estratégia</th><th>Quita em</th><th>Juros pagos</th><th>Patrimônio no fim</th><th>vs. melhor</th></tr>
+          </thead>
+          <tbody id="strat-body"></tbody>
+        </table>
+      </div>
+
+      <div class="card-head chart-head">
+        <h3 id="strat-title"></h3>
+        <div class="seg" role="tablist" id="strat-seg">
+          <button type="button" data-v="diff">Diferença vs. SAC + investir</button>
+          <button type="button" data-v="patrimonio">Patrimônio líquido</button>
+          <button type="button" data-v="saldo">Saldo devedor</button>
+        </div>
+      </div>
+      <p class="hint" id="strat-desc"></p>
+      <div class="chart-box"><canvas id="chart-strat" aria-label="Gráfico comparando investir e amortizar"></canvas></div>
+
+      <div class="card-head chart-head">
+        <h3>Mês a mês: o que fazer com a sobra</h3>
+        <div class="row-gap">
+          <select id="strat-table-sel" aria-label="Estratégia da tabela"></select>
+          <select id="strat-filter" aria-label="Filtrar meses">
+            <option value="todos">Todos os meses</option>
+            <option value="extra">Só meses com amortização extra</option>
+            <option value="ativo">Até a quitação</option>
+          </select>
+          <button type="button" class="btn" id="strat-csv">Exportar CSV</button>
+        </div>
+      </div>
+      <p class="hint" id="strat-table-sum"></p>
+      <div class="table-wrap tall">
+        <table class="amort strat-month">
+          <thead>
+            <tr>
+              <th>Mês</th><th>O que fazer</th><th>Parcela</th><th>Investir</th>
+              <th>Resgatar</th><th>Amortização extra</th><th>Saldo devedor</th><th>Carteira</th>
+            </tr>
+          </thead>
+          <tbody id="strat-month-body"></tbody>
+        </table>
+      </div>
+      <p class="hint" style="margin-top:8px">Valores nominais de cada mês (o que você efetivamente pagaria, investiria ou resgataria). Carteira líquida de IR, se marcado.</p>
+    </section>
+
+    <!-- ================= Quitar antes ================= -->
+    <section class="card" aria-labelledby="t-payoff">
+      <h2 id="t-payoff">Quitar antes do prazo</h2>
+      <p class="hint">Quanto pagar a mais por mês, além da parcela original do contrato, para quitar em menos meses. O desembolso mensal é o mesmo em todas as opções (parcela original + extra): abatendo, a queda da parcela também vai para o saldo; investindo, o extra rende IPCA + x% (com o IR da seção acima) até ser usado. Considera os abatimentos cadastrados.</p>
+      <div class="fields">
+        <label class="field">
+          <span>Quitar em (meses)</span>
+          <input id="payoff-target" type="number" min="1" step="1" inputmode="numeric">
+          <small id="payoff-target-hint" class="hint"></small>
+        </label>
+        <label class="field">
+          <span>Investir e abater a cada (meses)</span>
+          <input id="payoff-periodo" type="number" min="1" max="120" step="1" inputmode="numeric" aria-describedby="payoff-periodo-hint">
+          <small class="hint" id="payoff-periodo-hint">para a opção “investir e abater a cada N meses”</small>
+        </label>
+      </div>
+
+      <div class="verdict" id="payoff-verdict" role="status"></div>
+      <div class="table-wrap">
+        <table class="summary strat all-options payoff-table">
+          <thead>
+            <tr><th>Opção</th><th>Extra por mês</th><th>1º mês (parcela + extra)</th><th>Juros pagos</th><th>Juros economizados</th><th>IR dos resgates</th><th>Total desembolsado</th></tr>
+          </thead>
+          <tbody id="payoff-body"></tbody>
+        </table>
+      </div>
+
+      <div class="card-head chart-head"><h3>Saldo devedor</h3></div>
+      <p class="hint">Cor = sistema; traço = forma de usar o extra. As linhas finas e claras são os contratos sem extra.</p>
+      <div class="html-legend" id="payoff-legend"></div>
+      <div class="chart-box"><canvas id="chart-payoff" aria-label="Saldo devedor de cada opção para quitar antes"></canvas></div>
+
+      <div class="card-head chart-head">
+        <h3 id="payoff-sel-title">Mês a mês</h3>
+        <div class="row-gap">
+          <select id="payoff-filter" aria-label="Filtrar meses">
+            <option value="ativo">Até a quitação</option>
+            <option value="extra">Só meses com amortização extra</option>
+            <option value="todos">Todos os meses</option>
+          </select>
+          <button type="button" class="btn" id="payoff-csv">Exportar CSV</button>
+        </div>
+      </div>
+      <p class="hint" id="payoff-table-sum"></p>
+      <div class="table-wrap tall">
+        <table class="amort strat-month">
+          <thead>
+            <tr>
+              <th>Mês</th><th>O que fazer</th><th>Parcela</th><th>Investir</th>
+              <th>Resgatar</th><th>Amortização extra</th><th>Saldo devedor</th><th>Carteira</th>
+            </tr>
+          </thead>
+          <tbody id="payoff-month-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ================= Tabela ================= -->
+    <section class="card" aria-labelledby="t-tab">
+      <div class="card-head">
+        <h2 id="t-tab">Tabela de amortização</h2>
+        <div class="row-gap">
+          <div class="seg" role="tablist" id="table-seg">
+            <button type="button" data-v="SAC">SAC</button>
+            <button type="button" data-v="PRICE">PRICE</button>
+          </div>
+          <button type="button" class="btn" id="csv">Exportar CSV</button>
+        </div>
+      </div>
+      <div class="table-wrap tall">
+        <table class="amort">
+          <thead>
+            <tr>
+              <th>Mês</th><th>Parcela</th><th>Juros</th><th>Amortização</th><th>Abatimento</th><th>Saldo devedor</th>
+            </tr>
+          </thead>
+          <tbody id="amort-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="notes">
+      <h2>Premissas</h2>
+      <ul>
+        <li>Juros compostos; a taxa anual é convertida para a mensal equivalente.</li>
+        <li>Não considera TR/correção do saldo, seguros (MIP/DFI) nem tarifas administrativas — eles somam igualmente nos dois sistemas.</li>
+        <li>Abatimento “reduzir prazo” mantém a parcela (PRICE) ou a amortização (SAC) e encurta o contrato; “reduzir parcela” mantém o prazo e recalcula a parcela.</li>
+        <li>Investimento com rendimento constante de IPCA + x% a.a., aportes no fim de cada mês. O IR usa a tabela regressiva (22,5% a 15%) por aporte; custódia e IOF não são considerados.</li>
+        <li>Os parâmetros ficam salvos no endereço da página — copie o link para compartilhar a simulação.</li>
+      </ul>
+    </section>
+  </main>
+
+  <template id="extra-row">
+    <tr>
+      <td><input data-k="mes" type="number" min="1" step="1" aria-label="Mês"></td>
+      <td><input data-k="valor" type="number" min="0" step="1000" aria-label="Valor"></td>
+      <td><input data-k="repetir" type="number" min="0" step="1" placeholder="0 = único" aria-label="Repetir a cada (meses)"></td>
+      <td><input data-k="ate" type="number" min="1" step="1" placeholder="fim" aria-label="Até o mês"></td>
+      <td>
+        <select data-k="modo" aria-label="Efeito">
+          <option value="prazo">Reduzir prazo</option>
+          <option value="parcela">Reduzir parcela</option>
+        </select>
+      </td>
+      <td><button type="button" class="icon-btn" data-remove aria-label="Remover abatimento">×</button></td>
+    </tr>
+  </template>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="js/finance.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
