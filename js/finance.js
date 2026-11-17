@@ -155,12 +155,15 @@
     return total;
   }
 
-  /** Valor de resgate (líquido de IR, se applyIR) de lotes [{mes, valor}] no mês t. */
-  function lotsValue(lots, r, t, applyIR) {
+  /**
+   * Valor de resgate (líquido de IR, se applyIR) de lotes [{mes, valor}] no mês t.
+   * G é o fator acumulado de rendimento: G[k] = (1 + r1)(1 + r2)...(1 + rk), o que permite taxa variável.
+   */
+  function lotsValue(lots, G, t, applyIR) {
     let total = 0;
     for (const l of lots) {
       const age = t - l.mes;
-      const bruto = l.valor * Math.pow(1 + r, age);
+      const bruto = (l.valor * G[t]) / G[l.mes];
       total += applyIR && age > 0 ? bruto - (bruto - l.valor) * irRate(age) : bruto;
     }
     return total;
@@ -177,10 +180,16 @@
    */
   function runPolicy({
     principal, monthlyRate, months, horizon = months, system, extras, budget, mode, periodo = 1,
-    ipca, real, applyIR, finalOnly = false, resgateFinal, pararAoQuitar = false,
+    ipca, real, applyIR, finalOnly = false, resgateFinal, pararAoQuitar = false, taxaInicial,
   }) {
     const i = monthlyRate;
     const r = annualToMonthly((1 + ipca) * (1 + real) - 1);
+    // taxaInicial = { real, meses }: rende IPCA + taxaInicial.real nos primeiros `meses` (ex.: até o
+    // vencimento de um título) e IPCA + real depois (reinvestimento)
+    const r0 = taxaInicial ? annualToMonthly((1 + ipca) * (1 + taxaInicial.real) - 1) : r;
+    const m0 = taxaInicial ? taxaInicial.meses : 0;
+    const G = [1];
+    for (let k = 1; k <= horizon; k++) G[k] = G[k - 1] * (1 + (k <= m0 ? r0 : r));
     const ipcaM = annualToMonthly(ipca);
     const budgetAt = typeof budget === 'function' ? budget : () => budget;
     const extrasMap = expandExtras(extras, months);
@@ -254,8 +263,8 @@
           if (sobra > 0) lots.push({ mes: k, valor: sobra });
           acao = 'investir';
           if ((k % periodo === 0 || k === resgateFinal) && lots.length) {
-            const liquido = lotsValue(lots, r, k, applyIR);
-            ir = lotsValue(lots, r, k, false) - liquido;
+            const liquido = lotsValue(lots, G, k, applyIR);
+            ir = lotsValue(lots, G, k, false) - liquido;
             lots = [];
             amortExtra = Math.min(liquido, saldo);
             saldo -= amortExtra;
@@ -273,7 +282,7 @@
       }
       if (ativo && sobra === 0 && resgate === 0 && (acao === 'investir' || acao === 'amortizar')) acao = 'parcela';
 
-      const carteira = finalOnly && k < horizon ? 0 : lotsValue(lots, r, k, applyIR);
+      const carteira = finalOnly && k < horizon ? 0 : lotsValue(lots, G, k, applyIR);
       series.push({
         mes: k, acao, ativo, parcela, juros, amort, abatimento, sobra, investido, resgate, ir, amortExtra,
         saldo, carteira, patrimonio: carteira - saldo, jurosAcum, deflator: Math.pow(1 + ipcaM, k),
@@ -322,7 +331,7 @@
    * @param {number} [p.periodo] 1 = amortiza todo mês; N = investe e amortiza a cada N meses
    */
   function compareInvestment(p) {
-    const { sac, price, months, ipca, real, applyIR, mode = 'investir', periodo = 1, finalOnly = false, light = false } = p;
+    const { sac, price, months, ipca, real, applyIR, mode = 'investir', periodo = 1, finalOnly = false, light = false, taxaInicial } = p;
     const H = Math.max(months, sac.rows.length, price.rows.length);
     const desembolso = (rows, k) => {
       const row = rows[k - 1];
@@ -330,7 +339,7 @@
     };
     const budget = (k) => Math.max(desembolso(sac.rows, k), desembolso(price.rows, k));
     const run = (sim) =>
-      runPolicy({ ...sim.params, horizon: H, system: sim.system, budget, mode, periodo, ipca, real, applyIR, finalOnly });
+      runPolicy({ ...sim.params, horizon: H, system: sim.system, budget, mode, periodo, ipca, real, applyIR, finalOnly, taxaInicial });
     const runs = { SAC: run(sac), PRICE: run(price) };
     const S = runs.SAC.series;
     const P = runs.PRICE.series;
@@ -507,6 +516,41 @@
   }
 
   /**
+   * Para cada taxa real (ex.: títulos do Tesouro convertidos para IPCA + x), o patrimônio no fim
+   * de cada opção para a diferença das parcelas, e a melhor delas.
+   * @param {Array<{real: number, meses?: number}>} p.rates  taxa real anual (decimal) e, opcionalmente, por quantos
+   *        meses ela vale (ex.: até o vencimento do título); depois disso rende `reinvestimento`.
+   *        Os demais campos de cada item são mantidos.
+   * @param {number} [p.reinvestimento] taxa real anual após `meses` (padrão: a própria taxa)
+   */
+  function rankRates({ sac, price, months, ipca, applyIR, periodo = 12, rates, reinvestimento }) {
+    return rates.map((item) => {
+      const H = Math.max(months, sac.rows.length, price.rows.length);
+      const meses = item.meses === undefined ? H : Math.max(0, Math.min(H, item.meses));
+      const depois = reinvestimento === undefined ? item.real : reinvestimento;
+      const taxa = meses >= H ? { real: item.real } : { real: depois, taxaInicial: { real: item.real, meses } };
+      // taxa constante equivalente no período (média geométrica)
+      const media = Math.pow(Math.pow(1 + item.real, meses) * Math.pow(1 + depois, H - meses), 1 / H) - 1;
+      const fim = (mode, per) => {
+        const c = compareInvestment({ sac, price, months, ipca, ...taxa, applyIR, mode, periodo: per, finalOnly: true });
+        const l = c.series[c.series.length - 1];
+        return { SAC: l.patrimonioSac, PRICE: l.patrimonioPrice, deflator: l.deflator };
+      };
+      const inv = fim('investir', 1);
+      const am = fim('amortizar', 1);
+      const per = periodo > 1 ? fim('amortizar', periodo) : null;
+      const opcoes = [
+        { id: 'SAC-investir', final: inv.SAC },
+        { id: 'PRICE-investir', final: inv.PRICE },
+      ];
+      if (per) opcoes.push({ id: 'SAC-periodico', final: per.SAC }, { id: 'PRICE-periodico', final: per.PRICE });
+      opcoes.push({ id: 'amortizar', final: am.PRICE });
+      const melhor = opcoes.reduce((a, b) => (b.final > a.final ? b : a));
+      return { ...item, mesesTaxa: meses, reinvestimento: meses < H ? depois : null, media, opcoes, melhor, amortizar: am.PRICE, deflator: inv.deflator };
+    });
+  }
+
+  /**
    * Quanto é preciso pôr a mais por mês (valor fixo além da parcela original do contrato) para quitar
    * o financiamento até o mês `target`. O desembolso mensal é o mesmo em todas as opções
    * (parcela original + extra); o que exceder a parcela devida vai para:
@@ -650,6 +694,7 @@
     compareInvestment,
     compareAllPolicies,
     investVsAmortize,
+    rankRates,
     payoffPlan,
     milestones,
     budgetStrategy,

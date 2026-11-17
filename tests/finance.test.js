@@ -304,3 +304,40 @@ test('taxa para investir valer mais que amortizar', () => {
   assert.ok(abaixo.sacInv < abaixo.amortSac && acima.sacInv > acima.amortSac);
   close(comIR.sweep[0].amortSac, comIR.sweep[0].amortPrice, 1);
 });
+
+test('ranking de taxas: melhor opção por taxa', () => {
+  const p = { principal: 400000, monthlyRate: F.annualToMonthly(0.115), months: 360 };
+  const sac = F.simulate({ ...p, system: 'SAC' });
+  const price = F.simulate({ ...p, system: 'PRICE' });
+  const r = F.rankRates({ sac, price, months: 360, ipca: 0.045, applyIR: true, periodo: 12, rates: [{ id: 'baixa', real: 0.05 }, { id: 'alta', real: 0.09 }] });
+  assert.equal(r[0].id, 'baixa');
+  assert.equal(r[0].melhor.id, 'amortizar');
+  assert.equal(r[1].melhor.id, 'PRICE-investir');
+  assert.equal(r[0].opcoes.length, 5);
+  assert.ok(r[1].melhor.final > r[0].melhor.final);
+});
+
+test('taxa até o vencimento e reinvestimento depois', () => {
+  const p = { principal: 400000, monthlyRate: F.annualToMonthly(0.115), months: 360 };
+  const sac = F.simulate({ ...p, system: 'SAC' });
+  const price = F.simulate({ ...p, system: 'PRICE' });
+  const q = { sac, price, months: 360, ipca: 0.045, applyIR: true, periodo: 12 };
+  // vencimento depois do horizonte = taxa constante
+  const [a] = F.rankRates({ ...q, rates: [{ real: 0.08 }] });
+  const [b] = F.rankRates({ ...q, rates: [{ real: 0.08, meses: 400 }], reinvestimento: 0.03 });
+  close(a.melhor.final, b.melhor.final, 0.01);
+  // título curto com taxa alta, reinvestido a taxa baixa, vale menos que a taxa alta o tempo todo
+  const [curto] = F.rankRates({ ...q, rates: [{ real: 0.1, meses: 26 }], reinvestimento: 0.06 });
+  const [sempre] = F.rankRates({ ...q, rates: [{ real: 0.1 }] });
+  const [baixo] = F.rankRates({ ...q, rates: [{ real: 0.06 }] });
+  const pinv = (x) => x.opcoes.find((o) => o.id === 'PRICE-investir').final;
+  assert.ok(pinv(curto) < pinv(sempre) && pinv(curto) > pinv(baixo));
+  // amortizar só investe depois de quitar (após o vencimento do título curto): a taxa inicial não importa
+  close(curto.amortizar, baixo.amortizar, 0.01);
+  assert.ok(curto.media > 0.06 && curto.media < 0.065);
+  // carteira com taxa variável: valor de um único aporte cresce pelo produto das taxas
+  const r = F.runPolicy({ principal: 1000, monthlyRate: 0.01, months: 12, horizon: 24, system: 'PRICE', budget: (k) => (k === 1 ? 1e6 : 0),
+    mode: 'investir', ipca: 0, real: 0.12682503, applyIR: false, taxaInicial: { real: 0, meses: 12 } });
+  const invest = r.series[0].investido;
+  close(r.series[23].carteira, invest * Math.pow(1.01, 12), 0.01);
+});

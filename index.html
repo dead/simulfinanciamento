@@ -225,6 +225,56 @@
       </div>
     </section>
 
+    <!-- ================= Tesouro Direto ================= -->
+    <section class="card dropzone" id="td-card" aria-labelledby="t-td">
+      <div class="card-head">
+        <h2 id="t-td">Títulos do Tesouro Direto</h2>
+        <div class="row-gap">
+          <label class="btn file-btn">Importar CSV…<input type="file" id="td-file" accept=".csv,text/csv,text/plain" hidden></label>
+          <button type="button" class="btn" id="td-exemplo">Lista de exemplo</button>
+          <button type="button" class="btn" id="td-limpar">Limpar</button>
+        </div>
+      </div>
+      <p class="hint">Importe o CSV da página de títulos do Tesouro Direto (ou arraste o arquivo para cá) e veja, para cada título, qual opção para a diferença das parcelas termina com mais patrimônio — investir, investir e amortizar a cada N meses ou amortizar todo mês. Usa o IPCA, o IR, o “a cada N meses” e o “R$ de hoje” da seção acima. O arquivo é lido só no seu navegador.</p>
+      <div class="fields">
+        <label class="field">
+          <span>Selic média esperada (% a.a.)</span>
+          <input id="td-selic" type="number" step="0.25" inputmode="decimal">
+          <small class="hint">para Tesouro Selic e Reserva (Selic em 13,75% em nov/2026; o mercado espera ~10% a partir de 2028)</small>
+        </label>
+        <label class="field">
+          <span>Reinvestimento após o vencimento (IPCA + % a.a.)</span>
+          <input id="td-reinv" type="number" step="0.1" inputmode="decimal">
+          <small class="hint">quanto o dinheiro rende depois que o título vence (ninguém garante as taxas de hoje)</small>
+        </label>
+        <label class="field">
+          <span>Taxa de custódia B3 (% a.a.)</span>
+          <input id="td-custodia" type="number" step="0.05" min="0" inputmode="decimal">
+          <small class="hint">descontada do rendimento de todos os títulos</small>
+        </label>
+        <div class="field checks">
+          <label class="check"><input type="checkbox" id="td-renda"> Incluir Renda+ e Educa+</label>
+          <small class="hint">pagam renda mensal após a conversão: pouco práticos para juntar e amortizar</small>
+          <label class="check"><input type="checkbox" id="td-cupom"> Incluir títulos com juros semestrais</label>
+          <small class="hint">o IR dos cupons é cobrado a cada pagamento, e a simulação não modela isso: o resultado deles sai otimista</small>
+        </div>
+      </div>
+      <p class="hint td-status" id="td-status" role="status"></p>
+      <div class="verdict" id="td-verdict" hidden></div>
+      <div class="table-wrap" id="td-table-wrap" hidden>
+        <table class="summary strat td-table">
+          <thead>
+            <tr>
+              <th>Título</th><th>Rendimento</th><th>Rende na simulação (após custódia)</th>
+              <th>Melhor opção com este título</th><th>Patrimônio no fim</th><th>vs. amortizar todo mês</th><th><span class="sr-only">Usar</span></th>
+            </tr>
+          </thead>
+          <tbody id="td-body"></tbody>
+        </table>
+      </div>
+      <p class="hint" id="td-notes" hidden style="margin-top:8px">Conversões: prefixados viram IPCA + x pelo IPCA esperado; Selic pela Selic média esperada. Cada título rende a própria taxa até o vencimento e, depois, a taxa de reinvestimento (o IR no vencimento e a reaplicação não são modelados). “Usar” aplica ao resto da página a taxa média equivalente do período. Títulos com juros semestrais têm os cupons tributados a cada pagamento (a simulação trata como se acumulassem, um pouco otimista). Vender antes do vencimento para amortizar sujeita o título à marcação a mercado.</p>
+    </section>
+
     <!-- ================= Investir ou amortizar ================= -->
     <section class="card" aria-labelledby="t-strat">
       <h2 id="t-strat">Investir ou amortizar?</h2>
@@ -401,6 +451,8 @@
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="js/finance.js"></script>
+  <script src="js/tesouro.js"></script>
+  <script src="data/tesouro-direto-exemplo.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

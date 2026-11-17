@@ -221,3 +221,15 @@ thead th { font-size: 0.8rem; font-weight: 600; color: var(--text-2); }
 #payoff-filter { width: auto; }
 input[aria-invalid="true"] { border-color: var(--bad); }
 small.hint.invalid { color: var(--bad); }
+.file-btn { display: inline-flex; align-items: center; }
+.file-btn:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
+.dropzone.dragging { outline: 2px dashed var(--accent); outline-offset: -6px; }
+.td-status { margin: 12px 0 0; }
+.td-status.erro { color: var(--bad); }
+.td-table td:first-child { min-width: 150px; white-space: normal; }
+.td-table td:nth-child(4) { min-width: 140px; }
+.td-table th, .td-table td { padding-left: 6px; padding-right: 6px; }
+.td-table th { white-space: normal; vertical-align: bottom; }
+.td-table .flag { display: block; font-size: 0.75rem; color: var(--muted); }
+.td-table td.neg-cell { color: var(--good); }
+.td-table .btn { padding: 4px 10px; font-size: 0.8rem; }

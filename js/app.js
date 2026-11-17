@@ -32,6 +32,11 @@
     payoffPeriodo: 12,
     payoffSel: 'PRICE-abater',
     payoffFilter: 'ativo',
+    tdSelic: 11,
+    tdCustodia: 0.2,
+    tdRenda: false,
+    tdReinv: 6,
+    tdCupom: false,
   };
 
   function loadState() {
@@ -220,6 +225,109 @@
   });
   bindPeriodo('periodo', 'periodo');
 
+  // ------------------------------------------------------------------ Tesouro Direto (lista importada)
+  const T = window.Tesouro;
+  const TD_KEY = 'simulfinanciamento.tesouro';
+  let tesouro = null; // { fonte, csv, titulos, ignorados }
+  let tdUsado = null; // nome do título aplicado com "Usar"
+
+  function setTesouro(csv, fonte, salvar = true) {
+    const r = T.parseTesouroCSV(csv);
+    if (!r.titulos.length) {
+      tdStatus('Nenhum título reconhecido em “' + fonte + '”. O arquivo precisa ter as colunas de título e rendimento (ex.: “IPCA + 7,50%”).', true);
+      return false;
+    }
+    tesouro = { fonte, csv, ...r };
+    tdUsado = null;
+    if (salvar) {
+      try {
+        localStorage.setItem(TD_KEY, JSON.stringify({ fonte, csv }));
+      } catch (_) { /* armazenamento indisponível: segue só nesta sessão */ }
+    }
+    return true;
+  }
+  function tdStatus(msg, erro = false) {
+    const el = $('td-status');
+    el.textContent = msg;
+    el.classList.toggle('erro', erro);
+  }
+  async function importarArquivo(file) {
+    if (!file) return;
+    try {
+      const csv = T.decodeCSV(await file.arrayBuffer());
+      if (setTesouro(csv, file.name)) schedule(0);
+    } catch (err) {
+      tdStatus('Não foi possível ler “' + file.name + '”: ' + err.message, true);
+    }
+  }
+  (function initTesouro() {
+    let salvo = null;
+    try {
+      salvo = JSON.parse(localStorage.getItem(TD_KEY) || 'null');
+    } catch (_) { /* ignore */ }
+    if (salvo && salvo.csv) setTesouro(salvo.csv, salvo.fonte, false);
+    else if (window.TESOURO_EXEMPLO) setTesouro(window.TESOURO_EXEMPLO.csv, 'lista de exemplo (' + window.TESOURO_EXEMPLO.data.split('-').reverse().join('/') + ')', false);
+  })();
+
+  $('td-file').addEventListener('change', (e) => {
+    importarArquivo(e.target.files[0]);
+    e.target.value = '';
+  });
+  $('td-exemplo').addEventListener('click', () => {
+    if (!window.TESOURO_EXEMPLO) return;
+    setTesouro(window.TESOURO_EXEMPLO.csv, 'lista de exemplo (' + window.TESOURO_EXEMPLO.data.split('-').reverse().join('/') + ')', false);
+    try {
+      localStorage.removeItem(TD_KEY);
+    } catch (_) { /* ignore */ }
+    schedule(0);
+  });
+  $('td-limpar').addEventListener('click', () => {
+    tesouro = null;
+    try {
+      localStorage.removeItem(TD_KEY);
+    } catch (_) { /* ignore */ }
+    schedule(0);
+  });
+  const card = $('td-card');
+  ['dragenter', 'dragover'].forEach((ev) =>
+    card.addEventListener(ev, (e) => {
+      if (![...(e.dataTransfer.types || [])].includes('Files')) return;
+      e.preventDefault();
+      card.classList.add('dragging');
+    })
+  );
+  ['dragleave', 'drop'].forEach((ev) => card.addEventListener(ev, () => card.classList.remove('dragging')));
+  card.addEventListener('drop', (e) => {
+    if (!e.dataTransfer.files.length) return;
+    e.preventDefault();
+    importarArquivo(e.dataTransfer.files[0]);
+  });
+  [['td-selic', 'tdSelic'], ['td-custodia', 'tdCustodia'], ['td-reinv', 'tdReinv']].forEach(([id, key]) => {
+    $(id).value = state[key];
+    $(id).addEventListener('input', (e) => {
+      const v = parseFloat(e.target.value);
+      if (!isNaN(v) && (v >= 0 || key === 'tdReinv')) {
+        state[key] = v;
+        schedule(250);
+      }
+    });
+  });
+  [['td-renda', 'tdRenda'], ['td-cupom', 'tdCupom']].forEach(([id, key]) => {
+    $(id).checked = !!state[key];
+    $(id).addEventListener('change', (e) => {
+      state[key] = e.target.checked;
+      schedule(0);
+    });
+  });
+  $('td-body').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-real]');
+    if (!b) return;
+    state.real = Number(b.dataset.real);
+    $('real').value = state.real;
+    tdUsado = b.dataset.nome;
+    schedule(0);
+  });
+
   // ------------------------------------------------------------------ abatimentos
   const tpl = $('extra-row');
   function renderExtras() {
@@ -292,6 +400,19 @@
     const invOnly = state.invMode === 'investir' ? null : F.compareInvestment({ sac, price, ...invParams, mode: 'investir', finalOnly: true });
     const all = F.compareAllPolicies({ sac, price, ...invParams, periodo: state.invPeriodo });
     const iva = F.investVsAmortize({ sac, price, months, ipca: invParams.ipca, applyIR: state.ir, periodo: state.invPeriodo });
+    let td = null;
+    if (tesouro) {
+      const conv = { ipca: invParams.ipca, selic: state.tdSelic / 100, custodia: state.tdCustodia / 100 };
+      const titulos = tesouro.titulos.filter((t) => (state.tdRenda || !t.renda) && (state.tdCupom || !t.cupom));
+      const hoje = new Date();
+      const mesesAte = (d) =>
+        d ? (d.getUTCFullYear() - hoje.getFullYear()) * 12 + (d.getUTCMonth() - hoje.getMonth()) - (d.getUTCDate() < hoje.getDate() ? 1 : 0) : undefined;
+      const rates = titulos.map((t) => ({ titulo: t, ...T.taxaReal(t, conv), meses: mesesAte(t.vencimento) }));
+      td = {
+        ranking: F.rankRates({ sac, price, months, ipca: invParams.ipca, applyIR: state.ir, periodo: state.invPeriodo, rates, reinvestimento: state.tdReinv / 100 }),
+        ocultos: tesouro.titulos.length - titulos.length,
+      };
+    }
     const target = Number(state.payoffTarget) >= 1 ? Math.min(Number(state.payoffTarget), months) : Math.round(months / 2);
     const payoffBase = { principal: state.principal, monthlyRate, months, extras, target, periodo: state.payoffPeriodo, ...invParams };
     const pS = F.payoffPlan({ ...payoffBase, system: 'SAC' });
@@ -300,7 +421,7 @@
     const strat = F.compareStrategies({
       principal: state.principal, monthlyRate, months, budget: Number(state.budget) || 0, periodo: state.periodo, ...invParams,
     });
-    return { months, monthlyRate, extras, sac, price, baseSac, basePrice, inv, invOnly, breakEven, strat, all, iva, payoff };
+    return { months, monthlyRate, extras, sac, price, baseSac, basePrice, inv, invOnly, breakEven, strat, all, iva, td, payoff };
   }
 
   function update() {
@@ -316,6 +437,7 @@
     renderCompChart(r);
     renderAllOptions(r);
     renderBreakEven(r);
+    renderTesouro(r);
     renderInvestment(r);
     renderStrategies(r);
     renderPayoff(r);
@@ -1145,6 +1267,116 @@
       return Math.round(x * 1000) % 20 === 0 ? 'IPCA + ' + Math.round(x * 100) + '%' : null;
     };
     drawChart('be', 'chart-be', 'line', labels, ds, opts);
+  }
+
+  // ------------------------------------------------------------------ Tesouro Direto
+  const OPCAO_NOME = {
+    'SAC-investir': 'SAC + investir a diferença',
+    'PRICE-investir': 'PRICE + investir a diferença',
+    'SAC-periodico': () => 'SAC + investir e amortizar ' + cada(state.invPeriodo),
+    'PRICE-periodico': () => 'PRICE + investir e amortizar ' + cada(state.invPeriodo),
+    amortizar: 'Amortizar todo mês (SAC = PRICE)',
+  };
+  const nomeOpcao = (id) => (typeof OPCAO_NOME[id] === 'function' ? OPCAO_NOME[id]() : OPCAO_NOME[id]);
+
+  function renderTesouro({ td, months, iva }) {
+    const tem = !!td;
+    $('td-verdict').hidden = !tem;
+    $('td-table-wrap').hidden = !tem;
+    $('td-notes').hidden = !tem;
+    if (!tem) {
+      if (!$('td-status').classList.contains('erro')) tdStatus('Nenhuma lista carregada. Importe o CSV do Tesouro Direto ou use a lista de exemplo.');
+      return;
+    }
+    const defl = (x, it) => (state.hoje ? x / it.deflator : x);
+    const ranking = [...td.ranking].sort((a, b) => b.melhor.final - a.melhor.final);
+    let msg = tesouro.titulos.length + ' títulos de ' + tesouro.fonte;
+    if (td.ocultos) msg += ' (' + td.ocultos + ' ocultos pelos filtros: Renda+/Educa+ ou juros semestrais)';
+    if (tesouro.ignorados.length) msg += '; ' + tesouro.ignorados.length + ' linha(s) ignorada(s): ' + tesouro.ignorados.map((x) => 'linha ' + x.linha + ' (' + x.motivo + ')').join(', ');
+    if (tdUsado) msg += '. Taxa da simulação ajustada para ' + tdUsado + ': IPCA + ' + pct(state.real / 100) + '.';
+    tdStatus(msg + (tdUsado ? '' : '.'));
+    if (!ranking.length) return;
+
+    // veredito
+    const top = ranking[0];
+    const venceAmortizar = ranking.filter((it) => it.melhor.id !== 'amortizar');
+    const v = $('td-verdict');
+    v.textContent = '';
+    const lead = document.createElement('strong');
+    lead.textContent =
+      'Melhor: ' + top.titulo.nome + ' (' + top.titulo.rendimentoTexto + ' ≈ IPCA + ' + pct(top.real) + (top.reinvestimento !== null ? ' até o vencimento' : '') + ') com ' + nomeOpcao(top.melhor.id) +
+      ': ' + brl0.format(defl(top.melhor.final, top)) + ' no fim' + (state.hoje ? ' (em R$ de hoje)' : '') + '.';
+    const det = document.createElement('div');
+    det.className = 'hint';
+    det.style.margin = '4px 0 0';
+    det.textContent = venceAmortizar.length
+      ? 'Em ' + venceAmortizar.length + ' de ' + ranking.length + ' títulos investir a diferença vale mais que amortizar todo mês' +
+        (top.melhor.id === 'amortizar' ? '' : ' — com o melhor deles, ' + signed(defl(top.melhor.final - top.amortizar, top), brl0) + ' em relação a amortizar') + '.'
+      : 'Nenhum título rende o suficiente: amortizar todo mês vale mais com qualquer um deles (o empate exige cerca de IPCA + ' +
+        pct(Math.min(...[iva.breakEven.SAC, iva.breakEven.PRICE].filter((x) => x !== null))) + ').';
+    v.append(lead, det);
+
+    // tabela
+    const hoje = new Date();
+    const fimSimulacao = new Date(Date.UTC(hoje.getUTCFullYear(), hoje.getUTCMonth() + months, hoje.getUTCDate()));
+    const body = $('td-body');
+    body.textContent = '';
+    ranking.forEach((it, k) => {
+      const t = it.titulo;
+      const tr = document.createElement('tr');
+      if (k === 0) tr.className = 'best';
+      const nome = document.createElement('td');
+      nome.textContent = t.nome;
+      const flags = [];
+      if (t.vencimento && t.vencimento < fimSimulacao) flags.push('vence antes do fim');
+      if (t.cupom) flags.push('cupons semestrais tributados');
+      if (t.renda) flags.push('título de renda mensal');
+      flags.forEach((f) => {
+        const sp = document.createElement('span');
+        sp.className = 'flag';
+        sp.textContent = f;
+        nome.appendChild(sp);
+      });
+      tr.appendChild(nome);
+      const delta = it.melhor.final - it.amortizar;
+      const venc = t.vencimento ? t.vencimento.toLocaleDateString('pt-BR', { month: 'short', year: 'numeric', timeZone: 'UTC' }).replace(' de ', '/').replace('.', '') : '';
+      const rende = 'IPCA + ' + pct(it.real) + (venc ? ' até ' + venc : '');
+      const rendeSub = it.reinvestimento !== null ? 'depois IPCA + ' + pct(it.reinvestimento) + ' · média IPCA + ' + pct(it.media) : '';
+      const cells = [
+        t.rendimentoTexto,
+        rende,
+        nomeOpcao(it.melhor.id),
+        brl0.format(defl(it.melhor.final, it)),
+        it.melhor.id === 'amortizar' ? '—' : signed(defl(delta, it), brl0),
+      ];
+      cells.forEach((txt, i) => {
+        const td2 = document.createElement('td');
+        td2.textContent = txt;
+        if (i === 1 && rendeSub) {
+          const sp = document.createElement('span');
+          sp.className = 'flag';
+          sp.textContent = rendeSub;
+          td2.appendChild(sp);
+        }
+        if (i === 2) {
+          td2.style.textAlign = 'left';
+          td2.style.whiteSpace = 'normal';
+        }
+        if (i === 4 && it.melhor.id !== 'amortizar') td2.className = 'neg-cell';
+        tr.appendChild(td2);
+      });
+      const tdBtn = document.createElement('td');
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'btn';
+      b.textContent = 'Usar';
+      b.title = 'Usar IPCA + ' + pct(it.media) + ' (taxa média equivalente do título no período) como rendimento do investimento em toda a simulação';
+      b.dataset.real = String(Math.round(it.media * 1e6) / 1e4);
+      b.dataset.nome = t.nome;
+      tdBtn.appendChild(b);
+      tr.appendChild(tdBtn);
+      body.appendChild(tr);
+    });
   }
 
   // ------------------------------------------------------------------ quitar antes do prazo
